@@ -102,7 +102,7 @@ def main() -> None:
         print(f"→ コンテキスト: {json.dumps(ctx)}")
         for s in session.stats[passes:]:
             ttft = f" / TTFT {s.ttft:.2f}s" if s.ttft is not None else ""
-            print(f"→ {s.kind}: prefill {s.prefill_tokens:,} tok{ttft} / {s.steps} steps in {s.elapsed:.1f}s / 音声 {s.audio_seconds:.1f}s {s.note}")
+            print(f"→ {s.kind}: prefill {s.prefill_tokens:,} / {s.context_tokens:,} tok{ttft} / {s.steps} steps in {s.elapsed:.1f}s / 音声 {s.audio_seconds:.1f}s {s.note}")
 
 
 if __name__ == "__main__":

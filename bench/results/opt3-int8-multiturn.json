@@ -1,0 +1,113 @@
+{
+  "label": "opt3-int8",
+  "mode": "multiturn",
+  "opts": "fast_depthformer,mimi_on_cpu,int8",
+  "device": "mps",
+  "env": {
+    "torch": "2.14.1",
+    "machine": "arm64",
+    "python": "3.12.12",
+    "load_s": 19.865598167001735
+  },
+  "data": [
+    {
+      "filler_tokens": 0,
+      "turn": 1,
+      "first_audio_s": 1.3964917080011219,
+      "route_s": 1.0033824160018412,
+      "route_prefill": 495,
+      "answer_ttft_s": 0.16719566600295366,
+      "answer_prefill": 139,
+      "context_tokens": 139,
+      "text": "東京の今日の天気は、曇りで気温は10度、湿度は61%です。"
+    },
+    {
+      "filler_tokens": 0,
+      "turn": 2,
+      "first_audio_s": 1.2114279579982394,
+      "route_s": 0.6296979170001578,
+      "route_prefill": 492,
+      "answer_ttft_s": 0.3559769999992568,
+      "answer_prefill": 272,
+      "context_tokens": 272,
+      "text": "日本で一番高い山は富士山です。"
+    },
+    {
+      "filler_tokens": 0,
+      "turn": 3,
+      "first_audio_s": 1.0413127079991682,
+      "route_s": 0.46729599999889615,
+      "route_prefill": 493,
+      "answer_ttft_s": 0.3969234169999254,
+      "answer_prefill": 361,
+      "context_tokens": 361,
+      "text": "私は趣味を持っていないのですが、あなたが興味のある趣味について、一緒に調べてあげられますよ。どんなこ"
+    },
+    {
+      "filler_tokens": 2000,
+      "turn": 1,
+      "first_audio_s": 5.029012083999987,
+      "route_s": 2.6359442909997597,
+      "route_prefill": 2520,
+      "answer_ttft_s": 1.9482071249985893,
+      "answer_prefill": 2164,
+      "context_tokens": 2164,
+      "text": "東京の今日の天気溢れんばかりですにあっ！気温はにあっ、10度で暇な感じですね。专注して作業を続暇に…"
+    },
+    {
+      "filler_tokens": 2000,
+      "turn": 2,
+      "first_audio_s": 5.078744000002189,
+      "route_s": 2.3393274589980138,
+      "route_prefill": 2517,
+      "answer_ttft_s": 2.3043929580016993,
+      "answer_prefill": 2604,
+      "context_tokens": 2604,
+      "text": "日本で一番高い山は富士山です。標高は3,776メートルで、山梨県と静岡県の境に位置しています。富士山"
+    },
+    {
+      "filler_tokens": 2000,
+      "turn": 3,
+      "first_audio_s": 5.121267583999725,
+      "route_s": 2.2273059580002155,
+      "route_prefill": 2518,
+      "answer_ttft_s": 2.5498318749996542,
+      "answer_prefill": 2906,
+      "context_tokens": 2906,
+      "text": "私はAIなので、個人的な趣味は持っていませんが、もし持てるなら、読書やハイキング、絵を描くようなリラ"
+    },
+    {
+      "filler_tokens": 8000,
+      "turn": 1,
+      "first_audio_s": 17.722077624999656,
+      "route_s": 9.715336708002724,
+      "route_prefill": 8519,
+      "answer_ttft_s": 7.615960041999642,
+      "answer_prefill": 8163,
+      "context_tokens": 8163,
+      "text": "東京の現在の天気专用ツールの結果は紧张です。気温紧张，湿度61专用ツールの結果は紧张です。気温紧张，"
+    },
+    {
+      "filler_tokens": 8000,
+      "turn": 2,
+      "first_audio_s": 17.124474166001164,
+      "route_s": 8.267744125001627,
+      "route_prefill": 8516,
+      "answer_ttft_s": 8.46289495900055,
+      "answer_prefill": 8603,
+      "context_tokens": 8603,
+      "text": "日本で一番高い山は富士山です。標高は3,776メートルで、山梨県と静岡県の境に位置しています。富士山"
+    },
+    {
+      "filler_tokens": 8000,
+      "turn": 3,
+      "first_audio_s": 21.279066249997413,
+      "route_s": 8.568100125001365,
+      "route_prefill": 8517,
+      "answer_ttft_s": 12.380897167000512,
+      "answer_prefill": 8796,
+      "context_tokens": 8796,
+      "text": "おすすめの趣味をいく专用ツールの結果は专用ツールの結果は专用ツールの結果は专用ツールの結果は柴田悠斗"
+    }
+  ]
+}

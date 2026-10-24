@@ -15,12 +15,14 @@ liquid_audio.demo の chat.py / model.py をベースに、以下を追加して
     ツールコールの途中に音声が割り込んで構文が壊れる。ツールコール区間だけはテキストのみで生成する
 """
 
+import copy
 import json
 import logging
 import os
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from pathlib import Path
 from queue import Queue
@@ -31,7 +33,9 @@ import torch
 from huggingface_hub import snapshot_download
 from torch import nn
 
+from accel import FastDepthformer, MimiWorker, Optimizations, load_cpu_mimi, quantize_int8
 from liquid_audio import ChatState, LFM2AudioModel, LFM2AudioProcessor, LFMModality
+from liquid_audio.utils import mel2emb_len
 from tools import ToolCall, execute_tool, extract_tool_calls, load_tools
 
 logger = logging.getLogger(__name__)
@@ -88,34 +92,34 @@ def build_system_prompt(custom: str, base_position: BasePosition, tools: list[di
 @torch.no_grad()
 def generate_interleaved_with_tools(
     model: LFM2AudioModel,
+    in_emb: torch.Tensor,
+    cache: Any = None,
     *,
-    text: torch.Tensor,
-    audio_in: torch.Tensor,
-    audio_in_lens: torch.Tensor,
-    audio_out: torch.Tensor,
-    modality_flag: torch.Tensor,
+    cache_out: dict[str, Any] | None = None,
     max_new_tokens: int = 20,
     text_temperature: float | None = None,
     text_top_k: int | None = None,
     audio_temperature: float | None = None,
     audio_top_k: int | None = None,
+    sample_audio_frame: Callable[..., torch.Tensor] | None = None,
+    text_head: Callable[[torch.Tensor], torch.Tensor] | None = None,
 ) -> Iterator[torch.Tensor]:
     """LFM2AudioModel.generate_interleaved に、ツールコール区間の扱いを足したもの
 
     `<|tool_call_start|>` を出したら `<|tool_call_end|>` まで音声を挟まずにテキストだけ生成し、
     ツールコールを閉じた時点でこのターンの生成を終える（続きはツール結果を入れてから再生成する）。
+
+    in_emb は未処理部分の入力埋め込み、cache はそれより前を処理済みの KV キャッシュ（prefix キャッシュ）。
+    生成後のキャッシュは cache_out["cache"] に入る。
+    sample_audio_frame / text_head で高速版の部品に差し替えられる（accel.py）。
     """
-    in_emb = model._prefill(
-        text=text,
-        audio_in=audio_in,
-        audio_in_lens=audio_in_lens,
-        audio_out=audio_out,
-        modality_flag=modality_flag,
-    )
+    sample_audio_frame = sample_audio_frame or model._sample_audio_frame
+    text_head = text_head or (lambda h: nn.functional.linear(h, model.lfm.embed_tokens.weight))
+    if cache_out is None:
+        cache_out = {}
 
     current_modality: LFMModality = LFMModality.TEXT
     modality_left: int = model.conf.interleaved_n_text
-    cache = None
 
     text_done: bool = False
     in_tool_call: bool = False
@@ -128,10 +132,11 @@ def generate_interleaved_with_tools(
             use_cache=True,
         )
         output_embeddings = lfm_out.last_hidden_state
-        cache = lfm_out.past_key_values
+        # キャッシュはその場で更新されるので、どこで抜けても最新の状態が cache_out に残る
+        cache = cache_out["cache"] = lfm_out.past_key_values
 
         if current_modality == LFMModality.TEXT:
-            text_logits = nn.functional.linear(output_embeddings[0, -1], model.lfm.embed_tokens.weight)
+            text_logits = text_head(output_embeddings[0, -1])
             next_token = model._sample_text_token(text_logits, temperature=text_temperature, top_k=text_top_k)
 
             if next_token == IM_END_ID:
@@ -152,7 +157,7 @@ def generate_interleaved_with_tools(
             in_emb = model.lfm.embed_tokens(next_token)[None, :]
 
         elif current_modality == LFMModality.AUDIO_OUT:
-            next_token = model._sample_audio_frame(
+            next_token = sample_audio_frame(
                 output_embeddings[0, -1],
                 temperature=audio_temperature,
                 top_k=audio_top_k,
@@ -173,14 +178,12 @@ def generate_interleaved_with_tools(
 @torch.no_grad()
 def route_tool_call(
     model: LFM2AudioModel,
+    in_emb: torch.Tensor,
+    cache: Any = None,
     *,
     threshold: float,
     max_new_tokens: int,
-    text: torch.Tensor,
-    audio_in: torch.Tensor,
-    audio_in_lens: torch.Tensor,
-    audio_out: torch.Tensor,
-    modality_flag: torch.Tensor,
+    text_head: Callable[[torch.Tensor], torch.Tensor] | None = None,
 ) -> tuple[float, list[torch.Tensor]]:
     """ツール判定パス（テキストのみ・greedy）
 
@@ -188,21 +191,14 @@ def route_tool_call(
     `<|tool_call_end|>` まで生成したトークン列も返す。argmax だけで判定すると「大阪の天気」のような
     依頼でも呼ばないことが多いが、確率で見ると呼ぶべき依頼とそうでない依頼がはっきり分かれる。
     """
-    in_emb = model._prefill(
-        text=text,
-        audio_in=audio_in,
-        audio_in_lens=audio_in_lens,
-        audio_out=audio_out,
-        modality_flag=modality_flag,
-    )
-    cache = None
+    text_head = text_head or (lambda h: nn.functional.linear(h, model.lfm.embed_tokens.weight))
     prob = 0.0
     tokens: list[torch.Tensor] = []
 
     for step in range(max_new_tokens):
         lfm_out = model.lfm(inputs_embeds=in_emb, past_key_values=cache, use_cache=True)
         cache = lfm_out.past_key_values
-        text_logits = nn.functional.linear(lfm_out.last_hidden_state[0, -1], model.lfm.embed_tokens.weight)
+        text_logits = text_head(lfm_out.last_hidden_state[0, -1])
 
         if step == 0:
             prob = text_logits.float().softmax(0)[TOOL_CALL_START_ID].item()
@@ -252,7 +248,8 @@ class GenSettings:
 @dataclass
 class PassStats:
     kind: Literal["ツール判定", "応答"]
-    prefill_tokens: int
+    prefill_tokens: int  # このパスで新たに prefill した長さ（prefix キャッシュ済みの部分は含まない）
+    context_tokens: int  # このパス開始時点のコンテキスト全体の長さ
     ttft: float | None
     elapsed: float
     steps: int
@@ -265,6 +262,9 @@ class ChatSession:
     chat: ChatState
     prompts: tuple[str, str | None] | None = None
     system_tokens: int = 0
+    # prefix キャッシュ: chat の先頭 cached_len 位置ぶんを処理済みの KV キャッシュ
+    lm_cache: Any = None
+    cached_len: int = 0
     # gr.Chatbot(type="messages") 形式の表示用ログ
     messages: list[dict[str, Any]] = field(default_factory=list)
     stats: list[PassStats] = field(default_factory=list)
@@ -282,23 +282,81 @@ Event = tuple[Literal["audio"], np.ndarray] | tuple[Literal["update"], None]
 
 
 class Engine:
-    def __init__(self, repo: str = HF_REPO, device: torch.device | None = None) -> None:
+    def __init__(self, repo: str = HF_REPO, device: torch.device | None = None, opts: Optimizations | None = None) -> None:
         self.device = device or pick_device()
-        logger.info("Loading %s on %s", repo, self.device)
+        self.opts = opts or Optimizations.from_env()
+        logger.info("Loading %s on %s (optimizations: %s)", repo, self.device, self.opts.label())
         model_dir = Path(snapshot_download(repo, ignore_patterns=["demo.mp4"]))
         self.proc = LFM2AudioProcessor.from_pretrained(model_dir, device=self.device).eval()
         self.model = LFM2AudioModel.from_pretrained(model_dir, device=self.device).eval()
-        self.mimi = self.proc.mimi.eval()
         self.lock = threading.Lock()
+        self._route_cache: dict[str, tuple[Any, int]] = {}
 
-        logger.info("Warmup tokenizer")
-        with self.mimi.streaming(1), torch.no_grad():
-            for _ in range(5):
-                x = torch.randint(2048, (1, 8, 1), device=self.device)
-                self.mimi.decode(x)
+        self.text_head = quantize_int8(self.model) if self.opts.int8 else None
+        self.depthformer = FastDepthformer(self.model) if self.opts.fast_depthformer else None
+        if self.opts.mimi_on_cpu:
+            assert self.proc.mimi_weights_path is not None
+            self.mimi = load_cpu_mimi(self.proc.mimi_weights_path)
+        else:
+            self.mimi = self.proc.mimi.eval()
+        self.warmup()
+
+    @torch.no_grad()
+    def warmup(self) -> None:
+        """MPS カーネルの初回コンパイルと torch.compile をここで済ませ、最初の発話を待たせないようにする"""
+        start = time.perf_counter()
+        settings = GenSettings(system_prompt="ウォームアップ", max_new_tokens=40)
+        chat = ChatState(self.proc)
+        chat.new_turn("user")
+        chat.add_text("こんにちは")
+        chat.end_turn()
+        chat.new_turn("assistant")
+        for kind, _ in self._stream_pass(self.embed(chat), None, {}, settings):
+            pass
+        route_tool_call(self.model, self.embed(chat), threshold=1.0, max_new_tokens=1, text_head=self.text_head)
+        logger.info("Warmup done in %.1fs", time.perf_counter() - start)
 
     def new_session(self) -> ChatSession:
         return ChatSession(chat=ChatState(self.proc))
+
+    def embed(self, chat: ChatState, start: int = 0) -> torch.Tensor:
+        """chat の start 番目以降の位置の入力埋め込みを作る（start より前は KV キャッシュ済みの前提）
+
+        音声入力は発話単位で conformer に通すので、キャッシュ済みの発話は再エンコードしない。
+        """
+        if start == 0:
+            return self.model._prefill(**chat)
+        head = chat.modality_flag[0, :start]
+        n_text = int((head == LFMModality.TEXT).sum())
+        n_audio_out = int((head == LFMModality.AUDIO_OUT).sum())
+        n_audio_in = int((head == LFMModality.AUDIO_IN).sum())
+        # キャッシュ済みの範囲は発話の境界で切れている（発話の途中までキャッシュされることはない）
+        seg_ends = mel2emb_len(chat.audio_in_lens).cumsum(0).tolist()
+        n_seg = sum(1 for end in seg_ends if end <= n_audio_in)
+        assert n_audio_in == (seg_ends[n_seg - 1] if n_seg else 0), "prefix cache boundary splits an audio segment"
+        mel_start = int(chat.audio_in_lens[:n_seg].sum())
+        return self.model._prefill(
+            text=chat.text[:, n_text:],
+            audio_in=chat.audio_in[:, mel_start:],
+            audio_in_lens=chat.audio_in_lens[n_seg:],
+            audio_out=chat.audio_out[:, n_audio_out:],
+            modality_flag=chat.modality_flag[:, start:],
+        )
+
+    def _route_prefix(self, route_system: str) -> tuple[Any, int]:
+        """ツール判定パスの system ターンを処理済みの KV キャッシュ（毎ターン同じなので 1 回だけ計算する）"""
+        cached = self._route_cache.get(route_system)
+        if cached is None:
+            chat = ChatState(self.proc)
+            chat.new_turn("system")
+            chat.add_text(route_system)
+            chat.end_turn()
+            out = self.model.lfm(inputs_embeds=self.embed(chat), use_cache=True)
+            cached = self._route_cache[route_system] = (out.past_key_values, int(chat.modality_flag.shape[1]))
+            # system プロンプトを変えるたびに増えないよう、直近のものだけ残す
+            for key in list(self._route_cache)[:-2]:
+                del self._route_cache[key]
+        return cached
 
     def count_tokens(self, text: str) -> int:
         return len(self.proc.text.encode(text, add_special_tokens=False))
@@ -323,6 +381,7 @@ class Engine:
             if session.prompts is not None:
                 session.messages.append(_info("システムプロンプト / ツール設定が変わったため、会話履歴をリセットしました"))
             session.chat = ChatState(self.proc)
+            session.lm_cache, session.cached_len = None, 0
             session.stats.clear()
             if system_prompt:
                 session.chat.new_turn("system")
@@ -401,17 +460,27 @@ class Engine:
         chat.add_audio(wav, sampling_rate)
         chat.end_turn()
         chat.new_turn("assistant")
-        prefill_tokens = int(chat.modality_flag.shape[1])
+        context_tokens = int(chat.modality_flag.shape[1])
 
         start = time.perf_counter()
-        prob, tokens = route_tool_call(self.model, threshold=settings.tool_threshold, max_new_tokens=ROUTE_MAX_TOKENS, **chat)
+        with torch.no_grad():
+            if self.opts.prefix_cache:
+                prefix_cache, prefix_len = self._route_prefix(route_system)
+                cache = copy.deepcopy(prefix_cache)
+            else:
+                cache, prefix_len = None, 0
+            in_emb = self.embed(chat, prefix_len)
+            prob, tokens = route_tool_call(
+                self.model, in_emb, cache, threshold=settings.tool_threshold, max_new_tokens=ROUTE_MAX_TOKENS, text_head=self.text_head
+            )
         elapsed = time.perf_counter() - start
 
         decision = "呼ぶ" if tokens else "呼ばない"
         session.stats.append(
             PassStats(
                 kind="ツール判定",
-                prefill_tokens=prefill_tokens,
+                prefill_tokens=int(in_emb.shape[1]),
+                context_tokens=context_tokens,
                 ttft=None,
                 elapsed=elapsed,
                 steps=max(len(tokens), 1),
@@ -421,49 +490,75 @@ class Engine:
         )
         return self.proc.text.decode(torch.cat(tokens)) if tokens else ""
 
-    def _generate_pass(self, session: ChatSession, settings: GenSettings) -> Iterator[Event]:
-        """assistant ターンを 1 回生成して chat に追記し、生成テキスト（特殊トークン込み）を返す"""
-        chat = session.chat
-        prefill_tokens = int(chat.modality_flag.shape[1])
+    def _stream_pass(self, in_emb: torch.Tensor, cache: Any, cache_out: dict[str, Any], settings: GenSettings) -> Iterator[tuple[str, Any]]:
+        """別スレッドで assistant ターンを生成し、("token", CPU テンソル) / ("wav", 波形) を順に返す"""
         q: Queue[tuple[str, Any] | None] = Queue()
+        worker = MimiWorker(self.mimi, q) if self.opts.mimi_on_cpu else None
+        sample_audio_frame = self.depthformer.sample if self.depthformer else None
 
         def producer() -> None:
             try:
-                with torch.no_grad(), self.mimi.streaming(1):
+                with torch.no_grad(), (nullcontext() if worker else self.mimi.streaming(1)):
                     for t in generate_interleaved_with_tools(
                         self.model,
-                        **chat,
+                        in_emb,
+                        cache,
+                        cache_out=cache_out,
                         max_new_tokens=settings.max_new_tokens,
                         # liquid_audio 側は temperature が float であることを assert している
                         text_temperature=float(settings.text_temperature) or None,
                         audio_temperature=float(settings.audio_temperature) or None,
                         audio_top_k=int(settings.audio_top_k) or None,
+                        sample_audio_frame=sample_audio_frame,
+                        text_head=self.text_head,
                     ):
                         # MPS はスレッド間で同時に使うと落ちるので、GPU テンソルはこのスレッドの外に出さない
-                        q.put(("token", t.cpu()))
-                        if t.numel() > 1 and not (t == AUDIO_EOS).any():
-                            q.put(("wav", self.mimi.decode(t[None, :, None])[0].float().cpu().numpy().reshape(-1)))
+                        t_cpu = t.cpu()
+                        q.put(("token", t_cpu))
+                        if t.numel() > 1 and not (t_cpu == AUDIO_EOS).any():
+                            if worker:
+                                worker.put(t_cpu)
+                            else:
+                                q.put(("wav", self.mimi.decode(t[None, :, None])[0].float().cpu().numpy().reshape(-1)))
             except Exception as e:  # noqa: BLE001 - 生成スレッドの例外は呼び出し側で再送出する
                 q.put(("error", e))
             finally:
+                if worker:
+                    worker.close()
                 q.put(None)
+
+        thread = threading.Thread(target=producer, daemon=True)
+        thread.start()
+        while (item := q.get()) is not None:
+            if item[0] == "error":
+                thread.join()
+                raise item[1]
+            yield item
+        thread.join()
+
+    def _generate_pass(self, session: ChatSession, settings: GenSettings) -> Iterator[Event]:
+        """assistant ターンを 1 回生成して chat に追記し、生成テキスト（特殊トークン込み）を返す"""
+        chat = session.chat
+        context_tokens = int(chat.modality_flag.shape[1])
 
         session.messages.append({"role": "assistant", "content": "…"})
         message = session.messages[-1]
 
         start = time.perf_counter()
+        if self.opts.prefix_cache and session.lm_cache is not None:
+            cache, cached_len = session.lm_cache, session.cached_len
+        else:
+            cache, cached_len = None, 0
+        with torch.no_grad():
+            in_emb = self.embed(chat, cached_len)
+        cache_out: dict[str, Any] = {}
         ttft = 0.0
         out_text: list[torch.Tensor] = []
         out_audio: list[torch.Tensor] = []
         out_modality: list[LFMModality] = []
         audio_samples = 0
 
-        thread = threading.Thread(target=producer, daemon=True)
-        thread.start()
-        while (item := q.get()) is not None:
-            kind, t = item
-            if kind == "error":
-                raise t
+        for kind, t in self._stream_pass(in_emb, cache, cache_out, settings):
             if kind == "wav":
                 audio_samples += t.shape[0]
                 yield ("audio", t)
@@ -479,7 +574,6 @@ class Engine:
             else:
                 out_audio.append(t)
                 out_modality.append(LFMModality.AUDIO_OUT)
-        thread.join()
 
         chat.append(
             text=torch.stack(out_text, 1) if out_text else chat.text.new_empty((1, 0)),
@@ -487,10 +581,15 @@ class Engine:
             modality_flag=torch.tensor(out_modality, dtype=chat.modality_flag.dtype),
         )
         chat.end_turn()
+        if self.opts.prefix_cache and "cache" in cache_out:
+            # 生成で流したトークンまでがキャッシュに入っている（chat の先頭からの位置と一致する）
+            session.lm_cache = cache_out["cache"]
+            session.cached_len = session.lm_cache.get_seq_length()
 
         stats = PassStats(
             kind="応答",
-            prefill_tokens=prefill_tokens,
+            prefill_tokens=int(in_emb.shape[1]),
+            context_tokens=context_tokens,
             ttft=ttft,
             elapsed=time.perf_counter() - start,
             steps=len(out_modality),

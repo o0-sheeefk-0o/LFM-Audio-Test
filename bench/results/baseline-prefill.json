@@ -1,0 +1,39 @@
+{
+  "label": "baseline",
+  "mode": "prefill",
+  "device": "mps",
+  "dtype": "torch.bfloat16",
+  "env": {
+    "torch": "2.14.1",
+    "machine": "arm64",
+    "python": "3.12.12",
+    "load_s": 7.956559374997596
+  },
+  "data": [
+    {
+      "filler_tokens": 0,
+      "context_tokens": 82,
+      "prefill_ms": 117.84183399868198
+    },
+    {
+      "filler_tokens": 1000,
+      "context_tokens": 1106,
+      "prefill_ms": 908.6026670011051
+    },
+    {
+      "filler_tokens": 2000,
+      "context_tokens": 2107,
+      "prefill_ms": 1695.2372920022754
+    },
+    {
+      "filler_tokens": 4000,
+      "context_tokens": 4089,
+      "prefill_ms": 3398.408916997141
+    },
+    {
+      "filler_tokens": 8000,
+      "context_tokens": 8106,
+      "prefill_ms": 7616.4905420009745
+    }
+  ]
+}

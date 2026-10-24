@@ -1,0 +1,49 @@
+{
+  "label": "opt1-depthformer",
+  "mode": "components",
+  "opts": "fast_depthformer",
+  "device": "mps",
+  "env": {
+    "torch": "2.14.1",
+    "machine": "arm64",
+    "python": "3.12.12",
+    "load_s": 15.405335499999637
+  },
+  "data": {
+    "lfm_step": {
+      "latency_ms": 27.96681250038091,
+      "cpu_ms": 3.6825625011260854,
+      "pipelined_ms": 27.866627766585832
+    },
+    "text_head": {
+      "latency_ms": 3.2027505003497936,
+      "cpu_ms": 0.012166497981525026,
+      "pipelined_ms": 2.8738805666459184
+    },
+    "audio_frame": {
+      "latency_ms": 15.751187500427477,
+      "cpu_ms": 1.6895000026124762,
+      "pipelined_ms": 15.798395833310982
+    },
+    "audio_embed": {
+      "latency_ms": 0.1541459987492999,
+      "cpu_ms": 0.00808300137578044,
+      "pipelined_ms": 0.01937360005589047
+    },
+    "mimi_decode": {
+      "latency_ms": 11.846124998555752,
+      "cpu_ms": 3.7121460009075236,
+      "pipelined_ms": 11.00001666660925
+    },
+    "to_cpu_sync": {
+      "latency_ms": 0.1837919990066439,
+      "cpu_ms": 0.17435450172342826,
+      "pipelined_ms": 0.17356943341534742
+    },
+    "estimate": {
+      "text_step_ms": 31.169563000730705,
+      "audio_step_ms": 55.71827099811344,
+      "rtf": 0.9562247458158405
+    }
+  }
+}

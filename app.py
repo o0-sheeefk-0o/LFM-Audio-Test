@@ -41,14 +41,14 @@ def render_stats(session: ChatSession | None) -> str:
     if session.stats:
         lines += [
             "",
-            "| # | パス | 入力長 | 最初のトークンまで | 所要時間 | ステップ/秒 | 音声長 | RTF | 備考 |",
+            "| # | パス | prefill（新規 / 全体） | 最初のトークンまで | 所要時間 | ステップ/秒 | 音声長 | RTF | 備考 |",
             "|---:|---|---:|---:|---:|---:|---:|---:|---|",
         ]
         for i, s in list(enumerate(session.stats, 1))[-6:]:
             ttft = f"{s.ttft:.2f} 秒" if s.ttft is not None else "-"
             rtf = f"{s.elapsed / s.audio_seconds:.2f}" if s.audio_seconds else "-"
             lines.append(
-                f"| {i} | {s.kind} | {s.prefill_tokens:,} | {ttft} | {s.elapsed:.2f} 秒 | {s.steps / s.elapsed:.1f} | {s.audio_seconds:.1f} 秒 | {rtf} | {s.note} |"
+                f"| {i} | {s.kind} | {s.prefill_tokens:,} / {s.context_tokens:,} | {ttft} | {s.elapsed:.2f} 秒 | {s.steps / s.elapsed:.1f} | {s.audio_seconds:.1f} 秒 | {rtf} | {s.note} |"
             )
         lines.append("\nRTF = 生成にかかった時間 ÷ 生成した音声の長さ（1 未満ならリアルタイムより速い）")
     return "\n".join(lines)
