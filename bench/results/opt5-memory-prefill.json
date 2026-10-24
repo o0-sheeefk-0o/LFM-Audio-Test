@@ -1,0 +1,39 @@
+{
+  "label": "opt5-memory",
+  "mode": "prefill",
+  "opts": "fast_depthformer,mimi_on_cpu,int8,prefix_cache",
+  "device": "mps",
+  "env": {
+    "torch": "2.14.1",
+    "machine": "arm64",
+    "python": "3.12.12",
+    "load_s": 28.0046649169999
+  },
+  "data": [
+    {
+      "filler_tokens": 0,
+      "context_tokens": 82,
+      "prefill_ms": 107.0162079995498
+    },
+    {
+      "filler_tokens": 1000,
+      "context_tokens": 1106,
+      "prefill_ms": 913.5452919981617
+    },
+    {
+      "filler_tokens": 2000,
+      "context_tokens": 2107,
+      "prefill_ms": 1714.7980839981756
+    },
+    {
+      "filler_tokens": 4000,
+      "context_tokens": 4089,
+      "prefill_ms": 3722.1497499995166
+    },
+    {
+      "filler_tokens": 8000,
+      "context_tokens": 8106,
+      "prefill_ms": 13867.900625002221
+    }
+  ]
+}

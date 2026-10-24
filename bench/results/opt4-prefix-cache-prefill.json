@@ -1,0 +1,39 @@
+{
+  "label": "opt4-prefix-cache",
+  "mode": "prefill",
+  "opts": "fast_depthformer,mimi_on_cpu,int8,prefix_cache",
+  "device": "mps",
+  "env": {
+    "torch": "2.14.1",
+    "machine": "arm64",
+    "python": "3.12.12",
+    "load_s": 15.97008145899963
+  },
+  "data": [
+    {
+      "filler_tokens": 0,
+      "context_tokens": 82,
+      "prefill_ms": 107.84908300047391
+    },
+    {
+      "filler_tokens": 1000,
+      "context_tokens": 1106,
+      "prefill_ms": 912.683124999603
+    },
+    {
+      "filler_tokens": 2000,
+      "context_tokens": 2107,
+      "prefill_ms": 1838.9507089996187
+    },
+    {
+      "filler_tokens": 4000,
+      "context_tokens": 4089,
+      "prefill_ms": 4060.0870000016585
+    },
+    {
+      "filler_tokens": 8000,
+      "context_tokens": 8106,
+      "prefill_ms": 16556.105957999534
+    }
+  ]
+}

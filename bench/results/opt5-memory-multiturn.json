@@ -1,0 +1,113 @@
+{
+  "label": "opt5-memory",
+  "mode": "multiturn",
+  "opts": "fast_depthformer,mimi_on_cpu,int8,prefix_cache",
+  "device": "mps",
+  "env": {
+    "torch": "2.14.1",
+    "machine": "arm64",
+    "python": "3.12.12",
+    "load_s": 26.626823292001063
+  },
+  "data": [
+    {
+      "filler_tokens": 0,
+      "turn": 1,
+      "first_audio_s": 1.0941492079982709,
+      "route_s": 0.7494939579992206,
+      "route_prefill": 41,
+      "answer_ttft_s": 0.16507208399707451,
+      "answer_prefill": 139,
+      "context_tokens": 139,
+      "text": "東京の今日の天気は、曇りで気温は10度、湿度は61%です。"
+    },
+    {
+      "filler_tokens": 0,
+      "turn": 2,
+      "first_audio_s": 0.3835687920000055,
+      "route_s": 0.12487941599829355,
+      "route_prefill": 38,
+      "answer_ttft_s": 0.09721762499975739,
+      "answer_prefill": 40,
+      "context_tokens": 274,
+      "text": "日本で一番高い山は富士山です。"
+    },
+    {
+      "filler_tokens": 0,
+      "turn": 3,
+      "first_audio_s": 0.3811204169978737,
+      "route_s": 0.12353491700196173,
+      "route_prefill": 39,
+      "answer_ttft_s": 0.09505129099852638,
+      "answer_prefill": 41,
+      "context_tokens": 363,
+      "text": "私は趣味を持っていないのですが、あなたが興味のある趣味について、一緒に探したり話したりするお手伝いは"
+    },
+    {
+      "filler_tokens": 2000,
+      "turn": 1,
+      "first_audio_s": 4.27807845800271,
+      "route_s": 2.3417533339998045,
+      "route_prefill": 41,
+      "answer_ttft_s": 1.7722706659988035,
+      "answer_prefill": 2164,
+      "context_tokens": 2164,
+      "text": "東京の今日の天気にあたります。気温溫、湿度高頑気。"
+    },
+    {
+      "filler_tokens": 2000,
+      "turn": 2,
+      "first_audio_s": 0.4161777089975658,
+      "route_s": 0.11951416699957917,
+      "route_prefill": 38,
+      "answer_ttft_s": 0.12061395800265018,
+      "answer_prefill": 41,
+      "context_tokens": 2604,
+      "text": "日本で一番高い山は富士山です。"
+    },
+    {
+      "filler_tokens": 2000,
+      "turn": 3,
+      "first_audio_s": 1.0400193749992468,
+      "route_s": 0.46240220900290296,
+      "route_prefill": 39,
+      "answer_ttft_s": 0.33631120799691416,
+      "answer_prefill": 41,
+      "context_tokens": 2694,
+      "text": "私は個人的な趣味は持っていませんが、人気の趣味をいくつかご紹介しますね。1. 山登り 2. 釣り 3"
+    },
+    {
+      "filler_tokens": 8000,
+      "turn": 1,
+      "first_audio_s": 22.692510333999962,
+      "route_s": 11.84261991600215,
+      "route_prefill": 41,
+      "answer_ttft_s": 10.627856874998542,
+      "answer_prefill": 8163,
+      "context_tokens": 8163,
+      "text": "東京の現在の天気にあたるツールの結果专用の結果です。天专用の結果です。"
+    },
+    {
+      "filler_tokens": 8000,
+      "turn": 2,
+      "first_audio_s": 1.2753649160003988,
+      "route_s": 0.2920200830012618,
+      "route_prefill": 38,
+      "answer_ttft_s": 0.6905502910012729,
+      "answer_prefill": 40,
+      "context_tokens": 8253,
+      "text": "日本で一番高い山は恍惚峰です遼内です。標暈は約3,暈です。"
+    },
+    {
+      "filler_tokens": 8000,
+      "turn": 3,
+      "first_audio_s": 0.8070302919986716,
+      "route_s": 0.21580370800074888,
+      "route_prefill": 39,
+      "answer_ttft_s": 0.3209001250033907,
+      "answer_prefill": 41,
+      "context_tokens": 8358,
+      "text": "ツールの実行結果: [紧凑，紧�紧凑，紧�专用，紧凑暈，紧凑专用，紧凑专用，紧凑紧凑，紧�庵，紧凑专"
+    }
+  ]
+}

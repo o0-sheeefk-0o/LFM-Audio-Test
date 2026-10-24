@@ -288,11 +288,14 @@ class Engine:
         logger.info("Loading %s on %s (optimizations: %s)", repo, self.device, self.opts.label())
         model_dir = Path(snapshot_download(repo, ignore_patterns=["demo.mp4"]))
         self.proc = LFM2AudioProcessor.from_pretrained(model_dir, device=self.device).eval()
-        self.model = LFM2AudioModel.from_pretrained(model_dir, device=self.device).eval()
         self.lock = threading.Lock()
         self._route_cache: dict[str, tuple[Any, int]] = {}
 
+        # CPU で読み込んで（int8 ならここで量子化して）から GPU に移す。GPU 上で読み込むと、
+        # 読み込み時の一時領域や量子化前の bf16 重みが MPS のメモリプールに残り、16GB 機ではスワップの原因になる
+        self.model = LFM2AudioModel.from_pretrained(model_dir, device="cpu").eval()
         self.text_head = quantize_int8(self.model) if self.opts.int8 else None
+        self.model.to(self.device)
         self.depthformer = FastDepthformer(self.model) if self.opts.fast_depthformer else None
         if self.opts.mimi_on_cpu:
             assert self.proc.mimi_weights_path is not None

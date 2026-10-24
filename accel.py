@@ -108,9 +108,10 @@ def quantize_int8(model: LFM2AudioModel) -> Callable[[torch.Tensor], torch.Tenso
                     setattr(module, child_name, Int8Linear.from_linear(child))
     model.depth_linear = Int8Linear.from_linear(model.depth_linear)
 
-    # テキストヘッドは埋め込み行列と重み共有なので、ロジット計算用に int8 の複製を別に持つ
-    head = Int8Linear(model.lfm.embed_tokens.weight, None)
-    return lambda h: head(h[None])[0]
+    # テキストヘッドは埋め込み行列と重み共有なので、ロジット計算用に int8 の複製を別に持つ。
+    # model の子モジュールにして、model.to() で一緒にデバイスへ移るようにする
+    model.text_head_int8 = Int8Linear(model.lfm.embed_tokens.weight, None)
+    return lambda h: model.text_head_int8(h[None])[0]
 
 
 # ---------------------------------------------------------------------------
