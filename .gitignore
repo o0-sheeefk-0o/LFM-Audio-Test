@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+
+# cli.py の応答音声の出力先
+outputs/
