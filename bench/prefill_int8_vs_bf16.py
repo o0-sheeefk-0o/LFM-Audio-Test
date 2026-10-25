@@ -1,6 +1,6 @@
 import sys, time, torch
 from pathlib import Path
-sys.path.insert(0, "/Users/yuhi/workspace/LFM-Audio-Test")
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from huggingface_hub import snapshot_download
 from liquid_audio import LFM2AudioModel, LFM2AudioProcessor, ChatState
 from accel import quantize_int8
