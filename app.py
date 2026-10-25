@@ -5,21 +5,32 @@ liquid_audio.demo.chat をベースに、システムプロンプト入力・ツ
 """
 
 import logging
+import shutil
+import time
+from pathlib import Path
 from typing import Any
 
 import gradio as gr
 import numpy as np
+import soundfile as sf
 import torch
-from fastrtc import AdditionalOutputs, ReplyOnPause, WebRTC
+from fastrtc import AdditionalOutputs, WebRTC
 
+import vad
 from engine import BASE_INSTRUCTION, CONTEXT_LIMIT, OUTPUT_SAMPLE_RATE, ChatSession, Engine, GenSettings
 from filler import make_filler
 from tools import SAMPLE_TOOLS_JSON
+from vad import UtteranceReplyOnPause
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
 
 engine = Engine()
+
+# モデルが受け取ったユーザー音声の保存先（会話ログで再生できるようにする）。起動のたびに空にする
+RECORDINGS = Path(__file__).resolve().parent / "outputs" / "recordings"
+shutil.rmtree(RECORDINGS, ignore_errors=True)
+RECORDINGS.mkdir(parents=True, exist_ok=True)
 
 DEFAULT_SYSTEM_PROMPT = "あなたは親切な日本語の音声アシスタントです。回答は短く、話し言葉で答えてください。"
 
@@ -115,8 +126,12 @@ def chat_response(
     )
 
     rate, wav = audio
+    audio_path = RECORDINGS / f"{time.strftime('%Y%m%d-%H%M%S')}-{len(session.messages):03d}.wav"
+    sf.write(audio_path, wav.reshape(-1), rate)
     try:
-        for kind, payload in engine.run_user_turn(session, torch.tensor(wav / 32_768, dtype=torch.float), rate, settings):
+        for kind, payload in engine.run_user_turn(
+            session, torch.tensor(wav / 32_768, dtype=torch.float), rate, settings, audio_path=str(audio_path)
+        ):
             if kind == "audio":
                 yield (OUTPUT_SAMPLE_RATE, (payload * 32_767).astype(np.int16)[None, :])
             else:
@@ -201,6 +216,15 @@ with gr.Blocks(title="LFM2.5-Audio-JP S2S") as demo:
                 tools_json = gr.Code(value=SAMPLE_TOOLS_JSON, language="json", label="ツール定義（編集可。実装のないツールはモック応答を返します）", lines=12, max_lines=24)
                 reset_tools_btn = gr.Button("サンプルに戻す", size="sm")
 
+            with gr.Accordion("音声入力（発話の切り出し）", open=False):
+                gr.Markdown(
+                    "話し終わりを検出してから応答します。言葉の途中の間で切れて質問が途中までしか届かないときは、"
+                    "無音の長さを伸ばしてください。マイクの音量が小さいときは VAD のしきい値を下げてください。"
+                    "モデルが受け取った音声は会話ログで再生できます。"
+                )
+                end_silence = gr.Slider(0.3, 2.0, value=vad.VAD.end_silence_s, step=0.1, label="発話終了と判定する無音の長さ（秒）")
+                vad_threshold = gr.Slider(0.1, 0.9, value=vad.VAD.threshold, step=0.05, label="VAD のしきい値（発話とみなす確率）")
+
             with gr.Accordion("生成パラメータ", open=False):
                 text_temperature = gr.Slider(0, 2, value=0, step=0.05, label="text temperature（0 = greedy）")
                 audio_temperature = gr.Slider(0, 2, value=1.0, step=0.05, label="audio temperature（0 = greedy）")
@@ -211,7 +235,7 @@ with gr.Blocks(title="LFM2.5-Audio-JP S2S") as demo:
                 system_preview = gr.Textbox(show_label=False, lines=8, max_lines=20, interactive=False, show_copy_button=True)
 
     webrtc.stream(
-        ReplyOnPause(
+        UtteranceReplyOnPause(
             chat_response,  # type: ignore[arg-type]
             input_sample_rate=24_000,
             output_sample_rate=OUTPUT_SAMPLE_RATE,
@@ -246,10 +270,12 @@ with gr.Blocks(title="LFM2.5-Audio-JP S2S") as demo:
 
     filler_btn.click(add_filler, inputs=[system_prompt, filler_tokens], outputs=[system_prompt])
     reset_tools_btn.click(lambda: SAMPLE_TOOLS_JSON, outputs=[tools_json])
+    end_silence.change(lambda v: setattr(vad.VAD, "end_silence_s", float(v)), inputs=[end_silence])
+    vad_threshold.change(lambda v: setattr(vad.VAD, "threshold", float(v)), inputs=[vad_threshold])
 
 
 def main():
-    demo.launch()
+    demo.launch(allowed_paths=[str(RECORDINGS)])
 
 
 if __name__ == "__main__":

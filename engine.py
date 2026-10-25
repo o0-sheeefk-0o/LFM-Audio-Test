@@ -369,12 +369,19 @@ class Engine:
             return ""
         return self.proc.text.decode(torch.cat(tokens)).replace(TEXT_END, "")
 
-    def run_user_turn(self, session: ChatSession, wav: torch.Tensor, sampling_rate: int, settings: GenSettings) -> Iterator[Event]:
-        """ユーザーの音声 1 発話を受け取り、ツール実行を挟みながら assistant の応答を生成する"""
-        with self.lock:
-            yield from self._run_user_turn(session, wav, sampling_rate, settings)
+    def run_user_turn(
+        self, session: ChatSession, wav: torch.Tensor, sampling_rate: int, settings: GenSettings, audio_path: str | None = None
+    ) -> Iterator[Event]:
+        """ユーザーの音声 1 発話を受け取り、ツール実行を挟みながら assistant の応答を生成する
 
-    def _run_user_turn(self, session: ChatSession, wav: torch.Tensor, sampling_rate: int, settings: GenSettings) -> Iterator[Event]:
+        audio_path を渡すと、会話ログにその音声ファイルの再生プレーヤーも出す（モデルが受け取った音声の確認用）。
+        """
+        with self.lock:
+            yield from self._run_user_turn(session, wav, sampling_rate, settings, audio_path)
+
+    def _run_user_turn(
+        self, session: ChatSession, wav: torch.Tensor, sampling_rate: int, settings: GenSettings, audio_path: str | None
+    ) -> Iterator[Event]:
         tools = settings.tools()
         prompts = settings.prompts()
         system_prompt, route_system = prompts
@@ -397,7 +404,11 @@ class Engine:
         chat.new_turn("user")
         chat.add_audio(wav, sampling_rate)
         chat.end_turn()
-        session.messages.append({"role": "user", "content": f"🎤 音声入力（{wav.shape[1] / sampling_rate:.1f} 秒）"})
+        duration = wav.shape[1] / sampling_rate
+        logger.info("user utterance: %.2fs", duration)
+        session.messages.append({"role": "user", "content": f"🎤 音声入力（{duration:.1f} 秒）"})
+        if audio_path:
+            session.messages.append({"role": "user", "content": {"path": audio_path, "mime_type": "audio/wav"}})
         yield ("update", None)
 
         if route_system is not None:
