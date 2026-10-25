@@ -107,6 +107,7 @@ def chat_response(
     audio_temperature: float,
     audio_top_k: int,
     max_new_tokens: int,
+    repeat_fallback: bool,
 ):
     if holder.session is None:
         holder.session = engine.new_session()
@@ -123,6 +124,7 @@ def chat_response(
         audio_temperature=audio_temperature,
         audio_top_k=audio_top_k,
         max_new_tokens=max_new_tokens,
+        repeat_fallback=repeat_fallback,
     )
 
     rate, wav = audio
@@ -219,17 +221,24 @@ with gr.Blocks(title="LFM2.5-Audio-JP S2S") as demo:
             with gr.Accordion("音声入力（発話の切り出し）", open=False):
                 gr.Markdown(
                     "話し終わりを検出してから応答します。言葉の途中の間で切れて質問が途中までしか届かないときは、"
-                    "無音の長さを伸ばしてください。マイクの音量が小さいときは VAD のしきい値を下げてください。"
+                    "無音の長さを伸ばしてください。マイクの音量が小さいときは VAD のしきい値と最小音量を下げてください。"
+                    "応答音声の再生中はマイク入力を受け付けません（応答の声や残響を発話として拾わないため）。"
                     "モデルが受け取った音声は会話ログで再生できます。"
                 )
                 end_silence = gr.Slider(0.3, 2.0, value=vad.VAD.end_silence_s, step=0.1, label="発話終了と判定する無音の長さ（秒）")
                 vad_threshold = gr.Slider(0.1, 0.9, value=vad.VAD.threshold, step=0.05, label="VAD のしきい値（発話とみなす確率）")
+                min_level = gr.Slider(-60, -20, value=vad.VAD.min_level_db, step=1, label="発話とみなす最小音量（dBFS。これより小さい音は残響・物音として無視）")
 
             with gr.Accordion("生成パラメータ", open=False):
                 text_temperature = gr.Slider(0, 2, value=0, step=0.05, label="text temperature（0 = greedy）")
                 audio_temperature = gr.Slider(0, 2, value=1.0, step=0.05, label="audio temperature（0 = greedy）")
                 audio_top_k = gr.Slider(0, 64, value=4, step=1, label="audio top-k（0 = 無制限）")
                 max_new_tokens = gr.Slider(64, 4096, value=1024, step=64, label="max new tokens（1 ターンあたり）")
+                repeat_fallback = gr.Checkbox(
+                    value=True,
+                    label="前の返答を繰り返しかけたら、会話履歴を使わずに答え直す",
+                    info="このモデルは履歴があると、自由回答の依頼に直前の返答（自己紹介など）をそのまま返しやすい。答え直すと会話はそのターンからやり直しになる",
+                )
 
             with gr.Accordion("実際にモデルへ渡す system ターン", open=False):
                 system_preview = gr.Textbox(show_label=False, lines=8, max_lines=20, interactive=False, show_copy_button=True)
@@ -254,6 +263,7 @@ with gr.Blocks(title="LFM2.5-Audio-JP S2S") as demo:
             audio_temperature,
             audio_top_k,
             max_new_tokens,
+            repeat_fallback,
         ],
         outputs=[webrtc],
     )
@@ -272,6 +282,7 @@ with gr.Blocks(title="LFM2.5-Audio-JP S2S") as demo:
     reset_tools_btn.click(lambda: SAMPLE_TOOLS_JSON, outputs=[tools_json])
     end_silence.change(lambda v: setattr(vad.VAD, "end_silence_s", float(v)), inputs=[end_silence])
     vad_threshold.change(lambda v: setattr(vad.VAD, "threshold", float(v)), inputs=[vad_threshold])
+    min_level.change(lambda v: setattr(vad.VAD, "min_level_db", float(v)), inputs=[min_level])
 
 
 def main():

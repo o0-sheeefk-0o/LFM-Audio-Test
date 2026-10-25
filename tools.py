@@ -21,7 +21,7 @@ TOOL_CALL_RE = re.compile(r"<\|tool_call_start\|>(.*?)<\|tool_call_end\|>", re.D
 SAMPLE_TOOLS: list[dict[str, Any]] = [
     {
         "name": "get_weather",
-        "description": "指定した都市の現在の天気と気温を取得する",
+        "description": "指定した都市の天気と気温を取得する。今日や明日の天気・気温を聞かれたときに使う",
         "parameters": {
             "type": "object",
             "properties": {
@@ -32,7 +32,7 @@ SAMPLE_TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "get_current_time",
-        "description": "現在の日付と時刻を取得する",
+        "description": "現在の日付と時刻を取得する。今の時刻や今日の日付を聞かれたときだけ使う",
         "parameters": {
             "type": "object",
             "properties": {
@@ -43,7 +43,7 @@ SAMPLE_TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "calculate",
-        "description": "四則演算などの数式を計算して結果を返す",
+        "description": "数式を計算して結果を返す。足し算・引き算・掛け算・割り算や割引などの計算を頼まれたときに使う",
         "parameters": {
             "type": "object",
             "properties": {

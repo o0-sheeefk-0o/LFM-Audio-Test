@@ -13,6 +13,9 @@ liquid_audio.demo の chat.py / model.py をベースに、以下を追加して
     判定は先頭トークンが `<|tool_call_start|>` になる確率のしきい値で行う（argmax だと取りこぼしが多い）。
   - interleaved 生成は「テキスト 6 トークン → 音声 9 フレーム」を強制的に交互に出すため、そのままだと
     ツールコールの途中に音声が割り込んで構文が壊れる。ツールコール区間だけはテキストのみで生成する
+  - 前の返答の繰り返しへの対策。このモデルは会話履歴があると、「何か面白い話をして」のような自由回答の依頼に
+    直前の返答（自己紹介や天気など）をそのまま返すことが多い（履歴なしなら正しく答える）。書き出しの
+    テキスト（音声より先に出る 6 トークン）が履歴中の返答と同じなら打ち切り、履歴を捨てて答え直す
 """
 
 import copy
@@ -56,6 +59,10 @@ TEXT_END_ID = 130
 
 TOOL_RESULT_PREFIX = "ツールの実行結果: "
 ROUTE_MAX_TOKENS = 256
+# 返答の書き出しのトークン数。interleaved 生成で最初の音声より前に出るテキスト（interleaved_n_text）と同じ長さ
+REPEAT_CHECK_TOKENS = 6
+# 書き出しがこれより短い返答（「はい。」など）は繰り返しとみなさない
+REPEAT_MIN_TOKENS = 4
 
 BasePosition = Literal["head", "tail", "none"]
 ToolMode = Literal["two_stage", "native"]
@@ -230,6 +237,8 @@ class GenSettings:
     audio_top_k: int = 4
     max_new_tokens: int = 1024
     max_tool_rounds: int = 3
+    # 返答の書き出しが会話履歴中の返答と同じなら、履歴を捨てて system ＋今回の発話だけで答え直す
+    repeat_fallback: bool = True
 
     def tools(self) -> list[dict[str, Any]]:
         return load_tools(self.tools_json) if self.tools_enabled else []
@@ -268,6 +277,8 @@ class ChatSession:
     # gr.Chatbot(type="messages") 形式の表示用ログ
     messages: list[dict[str, Any]] = field(default_factory=list)
     stats: list[PassStats] = field(default_factory=list)
+    # chat に入っている assistant の返答の書き出し（繰り返しの検知用）
+    answer_heads: list[tuple[int, ...]] = field(default_factory=list)
 
     def context_breakdown(self) -> dict[str, int]:
         # 生成中に別スレッドから呼ばれるので、GPU 演算をせず shape だけで数える（MPS は同時利用で落ちる）
@@ -281,6 +292,25 @@ class ChatSession:
 Event = tuple[Literal["audio"], np.ndarray] | tuple[Literal["update"], None]
 
 
+@dataclass
+class TurnInput:
+    """今回のターンの入力（繰り返しを検知して履歴なしで答え直すときに、chat を組み直すのに使う）"""
+
+    wav: torch.Tensor
+    sampling_rate: int
+    notes: list[str] = field(default_factory=list)  # 発話の後に入れた user のテキストターン（ツールの結果）
+
+
+@dataclass
+class PassOutput:
+    cache_out: dict[str, Any]
+    text: list[torch.Tensor] = field(default_factory=list)
+    audio: list[torch.Tensor] = field(default_factory=list)
+    modality: list[LFMModality] = field(default_factory=list)
+    audio_samples: int = 0
+    ttft: float = 0.0
+
+
 class Engine:
     def __init__(self, repo: str = HF_REPO, device: torch.device | None = None, opts: Optimizations | None = None) -> None:
         self.device = device or pick_device()
@@ -289,7 +319,7 @@ class Engine:
         model_dir = Path(snapshot_download(repo, ignore_patterns=["demo.mp4"]))
         self.proc = LFM2AudioProcessor.from_pretrained(model_dir, device=self.device).eval()
         self.lock = threading.Lock()
-        self._route_cache: dict[str, tuple[Any, int]] = {}
+        self._system_cache: dict[str, tuple[Any, int]] = {}
 
         # CPU で読み込んで（int8 ならここで量子化して）から GPU に移す。GPU 上で読み込むと、
         # 読み込み時の一時領域や量子化前の bf16 重みが MPS のメモリプールに残り、16GB 機ではスワップの原因になる
@@ -346,19 +376,22 @@ class Engine:
             modality_flag=chat.modality_flag[:, start:],
         )
 
-    def _route_prefix(self, route_system: str) -> tuple[Any, int]:
-        """ツール判定パスの system ターンを処理済みの KV キャッシュ（毎ターン同じなので 1 回だけ計算する）"""
-        cached = self._route_cache.get(route_system)
+    def _system_prefix(self, system: str) -> tuple[Any, int]:
+        """system ターンだけを処理済みの KV キャッシュ（ツール判定パスと、履歴なしでの答え直しで使い回す）
+
+        呼び出し側はその場で更新されないよう deepcopy して使う。
+        """
+        cached = self._system_cache.get(system)
         if cached is None:
             chat = ChatState(self.proc)
             chat.new_turn("system")
-            chat.add_text(route_system)
+            chat.add_text(system)
             chat.end_turn()
             out = self.model.lfm(inputs_embeds=self.embed(chat), use_cache=True)
-            cached = self._route_cache[route_system] = (out.past_key_values, int(chat.modality_flag.shape[1]))
-            # system プロンプトを変えるたびに増えないよう、直近のものだけ残す
-            for key in list(self._route_cache)[:-2]:
-                del self._route_cache[key]
+            cached = self._system_cache[system] = (out.past_key_values, int(chat.modality_flag.shape[1]))
+            # system プロンプトを変えるたびに増えないよう、直近のもの（判定用と応答用の 2 組）だけ残す
+            for key in list(self._system_cache)[:-4]:
+                del self._system_cache[key]
         return cached
 
     def count_tokens(self, text: str) -> int:
@@ -393,6 +426,7 @@ class Engine:
             session.chat = ChatState(self.proc)
             session.lm_cache, session.cached_len = None, 0
             session.stats.clear()
+            session.answer_heads.clear()
             if system_prompt:
                 session.chat.new_turn("system")
                 session.chat.add_text(system_prompt)
@@ -411,13 +445,16 @@ class Engine:
             session.messages.append({"role": "user", "content": {"path": audio_path, "mime_type": "audio/wav"}})
         yield ("update", None)
 
+        turn = TurnInput(wav, sampling_rate)
         if route_system is not None:
             route_text = self._route(session, wav, sampling_rate, route_system, settings)
-            yield from self._two_stage_turn(session, route_text, tools, settings)
+            yield from self._two_stage_turn(session, turn, route_text, tools, settings)
         else:
-            yield from self._native_turn(session, tools, settings)
+            yield from self._native_turn(session, turn, tools, settings)
 
-    def _two_stage_turn(self, session: ChatSession, route_text: str, tools: list[dict[str, Any]], settings: GenSettings) -> Iterator[Event]:
+    def _two_stage_turn(
+        self, session: ChatSession, turn: TurnInput, route_text: str, tools: list[dict[str, Any]], settings: GenSettings
+    ) -> Iterator[Event]:
         calls = self._report_calls(session, route_text)
         if calls:
             results = []
@@ -425,19 +462,21 @@ class Engine:
                 result = execute_tool(call, tools)
                 results.append({"tool": call.name, "result": result})
                 session.messages.append(_tool_message(call, result, "user のテキストターンとして応答パスに渡した内容"))
+            note = TOOL_RESULT_PREFIX + json.dumps(results, ensure_ascii=False)
             session.chat.new_turn("user")
-            session.chat.add_text(TOOL_RESULT_PREFIX + json.dumps(results, ensure_ascii=False))
+            session.chat.add_text(note)
             session.chat.end_turn()
+            turn.notes.append(note)
             yield ("update", None)
 
         session.chat.new_turn("assistant")
-        yield from self._generate_pass(session, settings)
+        yield from self._generate_pass(session, settings, turn)
 
-    def _native_turn(self, session: ChatSession, tools: list[dict[str, Any]], settings: GenSettings) -> Iterator[Event]:
-        chat = session.chat
+    def _native_turn(self, session: ChatSession, turn: TurnInput, tools: list[dict[str, Any]], settings: GenSettings) -> Iterator[Event]:
         for round_idx in range(settings.max_tool_rounds + 1):
-            chat.new_turn("assistant")
-            text = yield from self._generate_pass(session, settings)
+            session.chat.new_turn("assistant")
+            # tool ターンを挟んだ後の返答は、履歴なしで組み直せないので答え直しの対象にしない
+            text = yield from self._generate_pass(session, settings, turn if round_idx == 0 else None)
 
             calls = self._report_calls(session, text)
             if not calls:
@@ -446,6 +485,7 @@ class Engine:
                 session.messages.append(_info(f"ツール呼び出しが {settings.max_tool_rounds} 回を超えたので打ち切りました", "⚠️ 打ち切り"))
                 break
 
+            chat = session.chat  # 答え直しで組み直されていることがある
             for call in calls:
                 result = execute_tool(call, tools)
                 chat.new_turn("tool")  # type: ignore[arg-type]
@@ -479,7 +519,7 @@ class Engine:
         start = time.perf_counter()
         with torch.no_grad():
             if self.opts.prefix_cache:
-                prefix_cache, prefix_len = self._route_prefix(route_system)
+                prefix_cache, prefix_len = self._system_prefix(route_system)
                 cache = copy.deepcopy(prefix_cache)
             else:
                 cache, prefix_len = None, 0
@@ -504,8 +544,13 @@ class Engine:
         )
         return self.proc.text.decode(torch.cat(tokens)) if tokens else ""
 
-    def _stream_pass(self, in_emb: torch.Tensor, cache: Any, cache_out: dict[str, Any], settings: GenSettings) -> Iterator[tuple[str, Any]]:
-        """別スレッドで assistant ターンを生成し、("token", CPU テンソル) / ("wav", 波形) を順に返す"""
+    def _stream_pass(
+        self, in_emb: torch.Tensor, cache: Any, cache_out: dict[str, Any], settings: GenSettings, stop: threading.Event | None = None
+    ) -> Iterator[tuple[str, Any]]:
+        """別スレッドで assistant ターンを生成し、("token", CPU テンソル) / ("wav", 波形) を順に返す
+
+        stop をセットすると生成を打ち切る（それまでにキューに入った分は返る）。
+        """
         q: Queue[tuple[str, Any] | None] = Queue()
         worker = MimiWorker(self.mimi, q) if self.opts.mimi_on_cpu else None
         sample_audio_frame = self.depthformer.sample if self.depthformer else None
@@ -526,6 +571,8 @@ class Engine:
                         sample_audio_frame=sample_audio_frame,
                         text_head=self.text_head,
                     ):
+                        if stop is not None and stop.is_set():
+                            break
                         # MPS はスレッド間で同時に使うと落ちるので、GPU テンソルはこのスレッドの外に出さない
                         t_cpu = t.cpu()
                         q.put(("token", t_cpu))
@@ -550,72 +597,144 @@ class Engine:
             yield item
         thread.join()
 
-    def _generate_pass(self, session: ChatSession, settings: GenSettings) -> Iterator[Event]:
-        """assistant ターンを 1 回生成して chat に追記し、生成テキスト（特殊トークン込み）を返す"""
-        chat = session.chat
-        context_tokens = int(chat.modality_flag.shape[1])
+    def _generate_pass(self, session: ChatSession, settings: GenSettings, turn: TurnInput | None = None) -> Iterator[Event]:
+        """assistant ターンを 1 回生成して chat に追記し、生成テキスト（特殊トークン込み）を返す
 
+        turn を渡すと、書き出しが会話履歴中の返答と同じとき（前の返答の繰り返し）に生成を打ち切り、
+        会話履歴を捨てて system ＋今回の入力だけで答え直す（会話はこのターンからやり直しになる）。
+        書き出しは最初の音声より前に出るので、繰り返した部分は再生されない。
+        """
         session.messages.append({"role": "assistant", "content": "…"})
         message = session.messages[-1]
+        heads = session.answer_heads if settings.repeat_fallback and turn is not None else []
+        note = ""
 
         start = time.perf_counter()
         if self.opts.prefix_cache and session.lm_cache is not None:
             cache, cached_len = session.lm_cache, session.cached_len
         else:
             cache, cached_len = None, 0
+        context_tokens = int(session.chat.modality_flag.shape[1])
         with torch.no_grad():
-            in_emb = self.embed(chat, cached_len)
-        cache_out: dict[str, Any] = {}
-        ttft = 0.0
-        out_text: list[torch.Tensor] = []
-        out_audio: list[torch.Tensor] = []
-        out_modality: list[LFMModality] = []
-        audio_samples = 0
+            in_emb = self.embed(session.chat, cached_len)
+        out = yield from self._collect_pass(in_emb, cache, settings, message, heads, start)
 
-        for kind, t in self._stream_pass(in_emb, cache, cache_out, settings):
-            if kind == "wav":
-                audio_samples += t.shape[0]
-                yield ("audio", t)
-                continue
+        if out is None:
+            assert turn is not None and session.prompts is not None
+            note = f"前の返答の繰り返しを検知 → 履歴なしで再生成（{time.perf_counter() - start:.2f} 秒ぶん破棄）"
+            logger.info("repeated a previous answer; regenerating without history")
+            session.messages.insert(len(session.messages) - 1, _info("前の返答を繰り返しかけたので、会話履歴を使わずに答え直しました（会話はこのターンからやり直し）", "🔁 答え直し"))
+            message["content"] = "…"
+            session.chat = self._fresh_chat(session.prompts[0], turn)
+            session.answer_heads.clear()
+            context_tokens = int(session.chat.modality_flag.shape[1])
+            with torch.no_grad():
+                if self.opts.prefix_cache and session.prompts[0]:
+                    prefix_cache, cached_len = self._system_prefix(session.prompts[0])
+                    cache = copy.deepcopy(prefix_cache)
+                else:
+                    cache, cached_len = None, 0
+                in_emb = self.embed(session.chat, cached_len)
+            out = yield from self._collect_pass(in_emb, cache, settings, message, [], start)
+            assert out is not None
 
-            if not ttft:
-                ttft = time.perf_counter() - start
-            if t.numel() == 1:
-                out_text.append(t)
-                out_modality.append(LFMModality.TEXT)
-                message["content"] = _display_text(self.decode_text(out_text))
-                yield ("update", None)
-            else:
-                out_audio.append(t)
-                out_modality.append(LFMModality.AUDIO_OUT)
-
+        chat = session.chat
         chat.append(
-            text=torch.stack(out_text, 1) if out_text else chat.text.new_empty((1, 0)),
-            audio_out=torch.stack(out_audio, 1) if out_audio else chat.audio_out.new_empty((chat.codebooks, 0)),
-            modality_flag=torch.tensor(out_modality, dtype=chat.modality_flag.dtype),
+            text=torch.stack(out.text, 1) if out.text else chat.text.new_empty((1, 0)),
+            audio_out=torch.stack(out.audio, 1) if out.audio else chat.audio_out.new_empty((chat.codebooks, 0)),
+            modality_flag=torch.tensor(out.modality, dtype=chat.modality_flag.dtype),
         )
         chat.end_turn()
-        if self.opts.prefix_cache and "cache" in cache_out:
+        if self.opts.prefix_cache and "cache" in out.cache_out:
             # 生成で流したトークンまでがキャッシュに入っている（chat の先頭からの位置と一致する）
-            session.lm_cache = cache_out["cache"]
+            session.lm_cache = out.cache_out["cache"]
             session.cached_len = session.lm_cache.get_seq_length()
+        head = _answer_head(out.text)
+        if head is not None:
+            session.answer_heads.append(head)
 
         stats = PassStats(
             kind="応答",
             prefill_tokens=int(in_emb.shape[1]),
             context_tokens=context_tokens,
-            ttft=ttft,
+            ttft=out.ttft,
             elapsed=time.perf_counter() - start,
-            steps=len(out_modality),
-            audio_seconds=audio_samples / OUTPUT_SAMPLE_RATE,
+            steps=len(out.modality),
+            audio_seconds=out.audio_samples / OUTPUT_SAMPLE_RATE,
+            note=note,
         )
         session.stats.append(stats)
         logger.info("pass done: %s", stats)
 
-        text = self.decode_text(out_text)
+        text = self.decode_text(out.text)
         message["content"] = _display_text(text) or "（テキスト出力なし）"
         yield ("update", None)
         return text
+
+    def _collect_pass(
+        self,
+        in_emb: torch.Tensor,
+        cache: Any,
+        settings: GenSettings,
+        message: dict[str, Any],
+        heads: list[tuple[int, ...]],
+        start: float,
+    ) -> Iterator[Event]:
+        """1 回ぶんの生成を流しながら集めて PassOutput を返す。書き出しが heads のどれかと同じなら打ち切って None を返す"""
+        out = PassOutput(cache_out={})
+        stop = threading.Event()
+        checked = not heads
+        for kind, t in self._stream_pass(in_emb, cache, out.cache_out, settings, stop):
+            if stop.is_set():
+                continue  # 打ち切った後にキューに残っていた分は捨てる
+            if kind == "wav":
+                out.audio_samples += t.shape[0]
+                yield ("audio", t)
+                continue
+
+            if not out.ttft:
+                out.ttft = time.perf_counter() - start
+            if t.numel() == 1:
+                out.text.append(t)
+                out.modality.append(LFMModality.TEXT)
+                message["content"] = _display_text(self.decode_text(out.text))
+                yield ("update", None)
+            else:
+                out.audio.append(t)
+                out.modality.append(LFMModality.AUDIO_OUT)
+
+            # 書き出しのテキストが出そろった時点（最初の音声フレームより前）で 1 回だけ調べる
+            if not checked and (len(out.text) >= REPEAT_CHECK_TOKENS or t.numel() > 1):
+                checked = True
+                head = _answer_head(out.text)
+                if head is not None and any(prev[: len(head)] == head for prev in heads):
+                    stop.set()
+        return None if stop.is_set() else out
+
+    def _fresh_chat(self, system: str, turn: TurnInput) -> ChatState:
+        """会話履歴なしの chat（system ＋今回の発話＋ツールの結果）"""
+        chat = ChatState(self.proc)
+        if system:
+            chat.new_turn("system")
+            chat.add_text(system)
+            chat.end_turn()
+        chat.new_turn("user")
+        chat.add_audio(turn.wav, turn.sampling_rate)
+        chat.end_turn()
+        for note in turn.notes:
+            chat.new_turn("user")
+            chat.add_text(note)
+            chat.end_turn()
+        chat.new_turn("assistant")
+        return chat
+
+
+def _answer_head(text: list[torch.Tensor]) -> tuple[int, ...] | None:
+    """返答の書き出し。短すぎる返答とツールコールは繰り返しの判定に使わない"""
+    head = tuple(int(t) for t in text[:REPEAT_CHECK_TOKENS])
+    if len(head) < REPEAT_MIN_TOKENS or TOOL_CALL_START_ID in head:
+        return None
+    return head
 
 
 def _display_text(text: str) -> str:
